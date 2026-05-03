@@ -1,8 +1,25 @@
 import { PlaudConfig } from './config.js';
-import { BASE_URLS } from './types.js';
+import { resolveBaseUrl } from './types.js';
 import type { PlaudTokenData } from './types.js';
 
 const TOKEN_REFRESH_BUFFER_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+export interface PlaudJwtClaims {
+  iat: number;
+  exp: number;
+  region?: string;
+}
+
+export function decodePlaudJwt(jwt: string): PlaudJwtClaims {
+  const parts = jwt.split('.');
+  if (parts.length !== 3) throw new Error('Invalid JWT');
+  const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+  return {
+    iat: payload.iat ?? 0,
+    exp: payload.exp ?? 0,
+    region: typeof payload.region === 'string' ? payload.region : undefined,
+  };
+}
 
 export class PlaudAuth {
   private config: PlaudConfig;
@@ -13,6 +30,23 @@ export class PlaudAuth {
 
   async getToken(): Promise<string> {
     const cached = this.config.getToken();
+    const creds = this.config.getCredentials();
+    const isSso = creds?.authMode === 'sso' || (!!creds && !creds.email && !creds.password);
+
+    if (isSso) {
+      if (!cached) {
+        throw new Error("No SSO token stored. Run 'plaud login-sso'.");
+      }
+      if (this.isExpiringSoon(cached)) {
+        const days = Math.max(0, Math.ceil((cached.expiresAt - Date.now()) / (24 * 60 * 60 * 1000)));
+        throw new Error(
+          `Plaud SSO token expires in ${days} day(s). ` +
+          "Re-run 'plaud login-sso' with a fresh value from web.plaud.ai localStorage.tokenstr."
+        );
+      }
+      return cached.accessToken;
+    }
+
     if (cached && !this.isExpiringSoon(cached)) {
       return cached.accessToken;
     }
@@ -24,8 +58,14 @@ export class PlaudAuth {
     if (!creds) {
       throw new Error('No credentials configured. Run `plaud login` first.');
     }
+    if (creds.authMode === 'sso' || !creds.email || !creds.password) {
+      throw new Error(
+        "This config is in SSO mode; cannot refresh via email+password. " +
+        "Run 'plaud login-sso' with a fresh web.plaud.ai token."
+      );
+    }
 
-    const baseUrl = BASE_URLS[creds.region] ?? BASE_URLS['us'];
+    const baseUrl = resolveBaseUrl(creds.region);
     const body = new URLSearchParams({
       username: creds.email,
       password: creds.password,
@@ -48,7 +88,7 @@ export class PlaudAuth {
       throw new Error(data.msg || `Login failed (status ${data.status})`);
     }
 
-    const decoded = this.decodeJwtExpiry(data.access_token);
+    const decoded = decodePlaudJwt(data.access_token);
     const tokenData: PlaudTokenData = {
       accessToken: data.access_token,
       tokenType: data.token_type || 'Bearer',
@@ -62,12 +102,5 @@ export class PlaudAuth {
 
   private isExpiringSoon(token: PlaudTokenData): boolean {
     return Date.now() + TOKEN_REFRESH_BUFFER_MS > token.expiresAt;
-  }
-
-  private decodeJwtExpiry(jwt: string): { iat: number; exp: number } {
-    const parts = jwt.split('.');
-    if (parts.length !== 3) throw new Error('Invalid JWT');
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
-    return { iat: payload.iat ?? 0, exp: payload.exp ?? 0 };
   }
 }

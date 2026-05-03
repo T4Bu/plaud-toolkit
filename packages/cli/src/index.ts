@@ -1,4 +1,5 @@
 import { loginCommand } from './commands/login.js';
+import { ssoLoginCommand } from './commands/login-sso.js';
 import { listCommand } from './commands/list.js';
 import { downloadCommand } from './commands/download.js';
 import { transcriptCommand } from './commands/transcript.js';
@@ -6,6 +7,7 @@ import { syncCommand } from './commands/sync.js';
 
 const COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   login: loginCommand,
+  'login-sso': ssoLoginCommand,
   list: listCommand,
   download: downloadCommand,
   transcript: transcriptCommand,
@@ -39,7 +41,8 @@ function printUsage(): void {
   console.log(`Usage: plaud <command> [options]
 
 Commands:
-  login                 Save your Plaud credentials
+  login                 Save your Plaud credentials (email + password)
+  login-sso             Paste a web.plaud.ai token (Google/Apple SSO users)
   list                  List recordings
   download <id> [dir]   Download audio file
   transcript <id>       Print transcript
