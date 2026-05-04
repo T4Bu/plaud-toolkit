@@ -74,6 +74,54 @@ describe('PlaudClient', () => {
     expect(detail.transcript).toBe('');
   });
 
+  it('getRecording classifies auto_sum_note as summary and extracts the content', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        status: 0,
+        data: {
+          file_id: 'rec1',
+          file_name: 'Meeting',
+          pre_download_content_list: [
+            { data_id: 'auto_sum:abc', data_type: 'auto_sum_note', data_content: '## Summary\nKey decisions...' },
+          ],
+        },
+      }),
+    });
+
+    const detail = await client.getRecording('rec1');
+    expect(detail.summary).toBe('## Summary\nKey decisions...');
+    expect(detail.content_items[0]?.type).toBe('summary');
+  });
+
+  it('getRecording joins pre_download items with content_list to recover data_type', async () => {
+    // Real API shape: pre_download items only carry { data_id, data_content };
+    // the data_type lives on the parallel content_list entry, joined by data_id.
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        status: 0,
+        data: {
+          file_id: 'rec1',
+          file_name: 'Meeting',
+          content_list: [
+            { data_id: 'auto_sum:abc', data_type: 'auto_sum_note', data_link: 'https://s3/x' },
+            { data_id: 'note:def', data_type: 'high_light', data_link: 'https://s3/y' },
+          ],
+          pre_download_content_list: [
+            { data_id: 'auto_sum:abc', data_content: 'Inlined summary text' },
+            { data_id: 'note:def', data_content: '[{"timestamp":1000}]' },
+          ],
+        },
+      }),
+    });
+
+    const detail = await client.getRecording('rec1');
+    expect(detail.summary).toBe('Inlined summary text');
+    expect(detail.content_items[0]?.type).toBe('summary');
+    expect(detail.content_items[0]?.raw_type).toBe('auto_sum_note');
+  });
+
   it('getTranscript fetches the transaction content_list item, gunzips, and returns segments', async () => {
     const segments = [
       { start_time: 8520, end_time: 23040, content: 'Hello world.', speaker: 'Speaker 1', original_speaker: 'Speaker 1' },

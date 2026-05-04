@@ -21,7 +21,7 @@ function parseRegionFromDomain(domain: string): string {
 function classifyContentType(rawType: unknown): string | undefined {
   if (typeof rawType !== 'string') return undefined;
   const t = rawType.toLowerCase();
-  if (t.includes('summary')) return 'summary';
+  if (t.includes('summary') || t.includes('auto_sum') || t.includes('autosum')) return 'summary';
   if (t.includes('mindmap') || t.includes('mind_map') || t.includes('mind-map')) return 'mindmap';
   if (t.includes('chapter')) return 'chapters';
   if (t.includes('outline')) return 'outline';
@@ -102,9 +102,19 @@ export class PlaudClient {
     const raw = data.data ?? data;
 
     const preDownload: any[] = raw.pre_download_content_list ?? [];
+    // pre_download items typically only carry { data_id, data_content }. The
+    // actual data_type lives on the parallel content_list entry — join by data_id.
+    const contentList: any[] = raw.content_list ?? [];
+    const typeByDataId = new Map<string, string>();
+    for (const cl of contentList) {
+      if (cl?.data_id && typeof cl.data_type === 'string') {
+        typeByDataId.set(cl.data_id, cl.data_type);
+      }
+    }
     const content_items: PlaudRecordingContentItem[] = preDownload.map(item => {
       const rawType =
-        item.type ?? item.data_type ?? item.content_type ?? item.name ?? undefined;
+        item.type ?? item.data_type ?? item.content_type ?? item.name ??
+        (item.data_id ? typeByDataId.get(item.data_id) : undefined) ?? undefined;
       return {
         type: classifyContentType(rawType),
         raw_type: typeof rawType === 'string' ? rawType : undefined,

@@ -9,6 +9,18 @@ import {
   type PlaudRecording,
 } from '@plaud/core';
 
+// Plaud sometimes returns no speaker label (single-speaker clips, missing
+// diarization). Normalize "undefined"/empty/whitespace-only to null so callers
+// don't render the literal word "undefined" in chat output.
+function normalizeSpeaker(speaker: unknown): string | null {
+  if (typeof speaker !== 'string') return null;
+  const trimmed = speaker.trim();
+  if (!trimmed || trimmed.toLowerCase() === 'undefined' || trimmed.toLowerCase() === 'unknown') {
+    return null;
+  }
+  return trimmed;
+}
+
 function compact(r: PlaudRecording) {
   return {
     id: r.id,
@@ -23,6 +35,23 @@ function compact(r: PlaudRecording) {
 
 function toText(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
+}
+
+// content_items entries from getRecording carry both a clean `content` string
+// and the original API fields spread on top (data_link, duplicate data_content,
+// task_status, err_*, etc.). Drop the noisy/expiring stuff before returning.
+function cleanContentItem(item: any) {
+  const out: Record<string, unknown> = {};
+  if (item.type) out.type = item.type;
+  if (item.raw_type) out.raw_type = item.raw_type;
+  if (item.data_id) out.data_id = item.data_id;
+  if (item.data_title) out.title = item.data_title;
+  if (item.data_tab_name) out.tab = item.data_tab_name;
+  if (typeof item.content === 'string' && item.content) out.content = item.content;
+  if (item.extra && typeof item.extra === 'object' && Object.keys(item.extra).length > 0) {
+    out.extra = item.extra;
+  }
+  return out;
 }
 
 function formatTimestamp(ms: number): string {
@@ -139,10 +168,11 @@ async function main() {
         const matches: any[] = [];
         for (const seg of segments) {
           if ((seg.content ?? '').toLowerCase().includes(needle)) {
+            const sp = normalizeSpeaker(seg.speaker);
             matches.push({
               timestamp: formatTimestamp(seg.start_time),
               start_time_ms: seg.start_time,
-              speaker: seg.speaker,
+              ...(sp ? { speaker: sp } : {}),
               text: seg.content,
             });
             if (matches.length >= perRec) break;
@@ -179,17 +209,26 @@ async function main() {
     async (params) => {
       const segments = await client.getTranscript(params.recording_id);
       if (params.format === 'flat_text') {
-        const lines = segments.map(s => `[${formatTimestamp(s.start_time)}] ${s.speaker}: ${s.content}`);
+        const lines = segments.map(s => {
+          const sp = normalizeSpeaker(s.speaker);
+          const prefix = sp ? `${sp}: ` : '';
+          return `[${formatTimestamp(s.start_time)}] ${prefix}${s.content}`;
+        });
         return toText({
           id: params.recording_id,
           segment_count: segments.length,
           text: lines.join('\n'),
         });
       }
+      const cleaned = segments.map(s => {
+        const sp = normalizeSpeaker(s.speaker);
+        const { speaker: _drop, ...rest } = s;
+        return sp ? { ...rest, speaker: sp } : rest;
+      });
       return toText({
         id: params.recording_id,
-        segment_count: segments.length,
-        segments,
+        segment_count: cleaned.length,
+        segments: cleaned,
       });
     },
   );
@@ -211,12 +250,23 @@ async function main() {
 
   server.tool(
     'plaud_get_recording_detail',
-    'Get metadata for a recording: title, duration, timestamps, AI summary, plus any other AI artifacts in `content_items` (marks, outline, mind-map). Does NOT contain the verbatim transcript — use plaud_get_transcript for spoken content.',
+    'Get metadata for a recording: title, duration, timestamps, AI summary, plus any other AI artifacts in `content_items` (marks, outline, mind-map). Does NOT contain the verbatim transcript — use plaud_get_transcript for spoken content. For the full unfiltered API response (S3 URLs, embeddings, etc.) use plaud_get_recording_raw.',
     recordingIdSchema,
     async (params) => {
       const detail = await client.getRecording(params.recording_id);
-      const { raw, transcript: _drop, ...clean } = detail;
-      return toText(clean);
+      return toText({
+        id: detail.id,
+        title: detail.filename,
+        date: new Date(detail.start_time).toISOString().slice(0, 16),
+        duration_minutes: Math.round((detail.duration ?? 0) / 60000),
+        start_time_ms: detail.start_time,
+        end_time_ms: detail.end_time,
+        has_transcript: detail.is_trans,
+        has_summary: detail.is_summary,
+        keywords: detail.keywords ?? [],
+        summary: detail.summary ?? null,
+        content_items: (detail.content_items ?? []).map(cleanContentItem),
+      });
     },
   );
 
